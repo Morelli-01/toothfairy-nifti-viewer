@@ -1,0 +1,80 @@
+{
+  "name": "toothfairy-nifti-viewer",
+  "displayName": "ToothFairy NIfTI Viewer",
+  "description": "Interactive 3D and four-up viewer for CBCT NIfTI (.nii, .nii.gz) volumes and segmentation masks, with automatic orientation correction for ToothFairy scans.",
+  "version": "0.1.0",
+  "publisher": "aimagelab",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Morelli-01/toothfairy-nifti-viewer"
+  },
+  "bugs": {
+    "url": "https://github.com/Morelli-01/toothfairy-nifti-viewer/issues"
+  },
+  "homepage": "https://github.com/Morelli-01/toothfairy-nifti-viewer#readme",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onCustomEditor:toothfairyNifti.volumeViewer"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "toothfairyNifti.volumeViewer",
+        "displayName": "ToothFairy NIfTI Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.nii"
+          },
+          {
+            "filenamePattern": "*.nii.gz"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "toothfairyNifti.open",
+        "title": "Open with ToothFairy NIfTI Viewer"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run check && npm run build",
+    "test": "node --test tests/*.test.mjs",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies"
+  },
+  "dependencies": {
+    "nifti-reader-js": "^0.8.0",
+    "three": "^0.164.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/three": "^0.164.1",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "3.3.2",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.3"
+  },
+  "keywords": [
+    "nifti",
+    "nii",
+    "cbct",
+    "dental",
+    "toothfairy",
+    "medical imaging",
+    "volume rendering",
+    "segmentation"
+  ]
+}
