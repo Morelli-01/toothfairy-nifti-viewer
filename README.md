@@ -4,7 +4,7 @@ A VS Code extension for interactive viewing of CBCT NIfTI volumes and their segm
 
 ## Install
 
-Search for **ToothFairy NIfTI Viewer** in the Extensions view, or run `code --install-extension aimagelab.toothfairy-nifti-viewer`. Then open any `.nii` or `.nii.gz` file.
+Search for **ToothFairy NIfTI Viewer** in the Extensions view, or run `code --install-extension morelli01.toothfairy-nifti-viewer`. Then open any `.nii` or `.nii.gz` file.
 
 ## Rendering modes
 

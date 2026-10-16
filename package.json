@@ -3,7 +3,7 @@
   "displayName": "ToothFairy NIfTI Viewer",
   "description": "Interactive 3D and four-up viewer for CBCT NIfTI (.nii, .nii.gz) volumes and segmentation masks, with automatic orientation correction for ToothFairy scans.",
   "version": "0.1.0",
-  "publisher": "aimagelab",
+  "publisher": "morelli01",
   "repository": {
     "type": "git",
     "url": "https://github.com/Morelli-01/toothfairy-nifti-viewer"
