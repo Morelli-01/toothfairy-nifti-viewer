@@ -2,6 +2,8 @@
 
 A VS Code extension for interactive viewing of CBCT NIfTI volumes and their segmentation masks. It opens `.nii` and `.nii.gz` files as a custom editor with a GPU-rendered 3D view and an optional four-up (axial, coronal, sagittal + 3D) layout. Scans whose headers store superior/inferior upside down, such as the ToothFairy datasets, are corrected automatically.
 
+![3D render of a CBCT with its segmentation mask overlaid](media/screenshot.png)
+
 ## Install
 
 Search for **ToothFairy NIfTI Viewer** in the Extensions view, or run `code --install-extension morelli01.toothfairy-nifti-viewer`. Then open any `.nii` or `.nii.gz` file.

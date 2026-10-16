@@ -8,3 +8,4 @@ tsconfig.json
 dist/*.map
 .gitignore
 .code-review-graph/**
+media/screenshot.png
