@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { build } from 'esbuild';
 
 const bundle = await build({ entryPoints: ['src/volume-utils.ts'], bundle: true, write: false, platform: 'node', format: 'esm' });
-const { scaleSamples, geometry, orientationCode, clampWindow, calculateVolumeRange, buildVolumeTexture, buildLabelTexture, looksLikeLabelMap, looksUpsideDown, slicePlane, renderSlice } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const { scaleSamples, geometry, orientationCode, clampWindow, calculateVolumeRange, buildVolumeTexture, buildLabelTexture, looksLikeLabelMap, slicePlane, renderSlice, ORIENTATION_CODES, orientationMatrix, toothFairyLabelName, datasetLabelNames } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 
 test('negative scaling changes which voxel wins MIP', () => {
   assert.deepEqual([...scaleSamples([1, 4, 8], -2, 20)], [18, 12, 4]);
@@ -66,19 +66,28 @@ test('label-map heuristic accepts sparse classes and rejects continuous intensit
   assert.equal(looksLikeLabelMap([0, 0, 1, 2, 42], 1, 0), true);
   assert.equal(looksLikeLabelMap([0, 0.25, 1], 1, 0), false);
 });
-test('S/I inversion: bone-poor end is inferior; FDI upper teeth sit above lower', () => {
-  const ras = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
-  const sFlipped = [1,0,0,0, 0,1,0,0, 0,0,-1,0, 0,0,0,1];
-  const slab = (fill) => Float32Array.from({ length: 4 * 20 }, (_, i) => fill(Math.floor(i / 4)));
-  const range = { low: 0, high: 1000 };
-  const boneBelow = slab(k => k < 17 ? 1000 : 0);         // k=17..19 empty: neck at high k
-  assert.equal(looksUpsideDown(boneBelow, [2, 2, 20], ras, 1, 0, range), true);
-  assert.equal(looksUpsideDown(boneBelow, [2, 2, 20], sFlipped, 1, 0, range), false);
-  assert.equal(looksUpsideDown(slab(() => 1000), [2, 2, 20], ras, 1, 0, range), false);   // tie trusts header
-  const teeth = slab(k => k === 3 ? 16 : k === 15 ? 36 : 0); // upper molar below lower molar
-  assert.equal(looksUpsideDown(teeth, [2, 2, 20], ras, 1, 0), true);
-  assert.equal(looksUpsideDown(teeth, [2, 2, 20], sFlipped, 1, 0), false);
-  assert.equal(looksUpsideDown(slab(k => k === 3 ? 16 : 0), [2, 2, 20], ras, 1, 0), false);
+test('all 48 orientation codes build matrices that read back as the same code', () => {
+  assert.equal(new Set(ORIENTATION_CODES).size, 48);
+  assert.deepEqual(ORIENTATION_CODES.slice(0, 8), ['RAS', 'LAS', 'RPS', 'LPS', 'RAI', 'LAI', 'RPI', 'LPI']);
+  for (const code of ORIENTATION_CODES) assert.equal(orientationCode(orientationMatrix(code)), code);
+  assert.deepEqual([...orientationMatrix('ASL')], [0,1,0,0, 0,0,1,0, -1,0,0,0, 0,0,0,1]);
+});
+test('label list comes from full-resolution voxels, not downsampled winners', () => {
+  assert.deepEqual(buildLabelTexture([2, 2, 3, 0], [4, 1, 1], 1, 0, 1).labels, [2, 3]);
+});
+test('ToothFairy names cover structures, FDI teeth and pulps only', () => {
+  assert.equal(toothFairyLabelName(1), 'Lower Jawbone');
+  assert.equal(toothFairyLabelName(18), 'Upper Right Third Molar (Wisdom Tooth)');
+  assert.equal(toothFairyLabelName(36), 'Lower Left First Molar');
+  assert.equal(toothFairyLabelName(105), 'Lingual Canal');
+  assert.equal(toothFairyLabelName(141), 'Lower Right Central Incisor Pulp');
+  for (const label of [0, 19, 50, 109, 149, 151, 211]) assert.equal(toothFairyLabelName(label), undefined);
+});
+test('dataset.json labels: nnU-Net name → id, MSD id → name, region lists skipped', () => {
+  assert.deepEqual(datasetLabelNames({ background: 0, 'Lower Jawbone': 1, teeth: [11, 12] }), { 0: 'background', 1: 'Lower Jawbone' });
+  assert.deepEqual(datasetLabelNames({ 0: 'background', 2: 'liver' }), { 0: 'background', 2: 'liver' });
+  assert.equal(datasetLabelNames(undefined), null);
+  assert.equal(datasetLabelNames({ teeth: [11, 12] }), null);
 });
 test('slices follow radiological convention for an LPS-stored volume', () => {
   // LPS storage (i -> L, j -> P, k -> S), 1 mm voxels, centred: world = diag(-1,-1,1)·(ijk - 1), so

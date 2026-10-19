@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
+import { datasetLabelNames } from './volume-utils';
 
 const VIEW_TYPE = 'toothfairyNifti.volumeViewer';
 
@@ -67,6 +68,7 @@ class NiftiEditorProvider implements vscode.CustomReadonlyEditorProvider {
         type: 'maskSelected',
         uri: panel.webview.asWebviewUri(mask).toString(),
         filename: path.basename(mask.fsPath),
+        labelNames: await findLabelNames(vscode.Uri.joinPath(mask, '..')),
       });
     });
     panel.onDidDispose(() => messageSubscription.dispose());
@@ -85,6 +87,7 @@ class NiftiEditorProvider implements vscode.CustomReadonlyEditorProvider {
       styleUri,
       volumeUri,
       filename: path.basename(document.uri.fsPath),
+      labelNames: await findLabelNames(directory),
       nonce,
       cspSource: panel.webview.cspSource,
     });
@@ -96,6 +99,7 @@ function getHtml(options: {
   styleUri: vscode.Uri;
   volumeUri: vscode.Uri;
   filename: string;
+  labelNames: Record<number, string> | null;
   nonce: string;
   cspSource: string;
 }): string {
@@ -111,7 +115,7 @@ function getHtml(options: {
   <title>${filename}</title>
 </head>
 <body>
-  <main id="app" data-volume-uri="${volumeUri}" data-filename="${filename}">
+  <main id="app" data-volume-uri="${volumeUri}" data-filename="${filename}" data-label-names="${escapeHtml(JSON.stringify(options.labelNames))}">
     <div id="viewport" aria-label="Interactive 3D NIfTI volume">
       <canvas id="slice-axial" class="slice" aria-label="Axial slice"></canvas>
       <canvas id="slice-coronal" class="slice" aria-label="Coronal slice"></canvas>
@@ -125,17 +129,10 @@ function getHtml(options: {
           <span id="metadata">Loading NIfTI volume…</span>
         </div>
         <div class="view-actions">
-          <select id="axis-order" aria-label="Display axis order" title="Reorder the displayed world axes">
-            <option value="xyz">Axes XYZ</option>
-            <option value="yxz">Swap X/Y</option>
-            <option value="xzy">Swap Y/Z</option>
-            <option value="zyx">Swap X/Z</option>
-            <option value="yzx">Axes YZX</option>
-            <option value="zxy">Axes ZXY</option>
+          <select id="orientation" aria-label="Voxel orientation" title="How voxel axes i, j, k map to patient directions: the header transform, the raw voxel grid, or a standard orientation code assigned to i·j·k">
+            <option value="header">Header</option>
+            <option value="raw">Raw voxels</option>
           </select>
-          <button id="orientation-toggle" class="orientation-toggle active" type="button" role="switch" aria-checked="true" aria-label="Orientation: RAS" title="Switch between LAS and RAS display orientation">
-            <span>LAS</span><span>RAS</span>
-          </button>
           <button id="layout-toggle" type="button" aria-pressed="false" title="Switch between the 3D view and four panels: axial, coronal, sagittal and 3D">Four-up</button>
           <button id="axial-camera" type="button">Axial</button>
           <button id="reset-camera" type="button">Reset 3D</button>
@@ -177,12 +174,20 @@ function getHtml(options: {
       <p class="help">3D: drag to rotate · right-drag to pan · scroll to zoom · Slices: click or drag to move the crosshair · scroll to change slice</p>
     </section>
     <aside id="mask-legend" aria-label="Segmentation labels" hidden>
-      <div class="legend-actions">
-        <span class="legend-title">Classes</span>
-        <button id="legend-all" type="button">All</button>
-        <button id="legend-none" type="button">None</button>
+      <div class="legend-head">
+        <span class="legend-title">Labels</span>
+        <span id="legend-count"></span>
+        <button id="legend-collapse" type="button" aria-expanded="true" aria-controls="legend-body" title="Collapse or expand the label list">▾</button>
       </div>
-      <div id="legend-labels" class="legend-labels"></div>
+      <div id="legend-body" class="legend-body">
+        <input id="legend-filter" type="search" placeholder="Filter: number or name (e.g. pulp, lower left)" aria-label="Filter labels">
+        <div class="legend-actions">
+          <button id="legend-all" type="button" title="Show every listed label">Show all</button>
+          <button id="legend-none" type="button" title="Hide every listed label">Hide all</button>
+          <button id="legend-invert" type="button" title="Invert visibility of every listed label">Invert</button>
+        </div>
+        <div id="legend-labels" class="legend-labels"></div>
+      </div>
     </aside>
     <div id="loading"><span class="spinner"></span><span id="loading-message">Reading volume…</span></div>
     <div id="error" role="alert" hidden></div>
@@ -190,6 +195,20 @@ function getHtml(options: {
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
+}
+
+/** Class names from the nearest dataset.json in `directory` or up to three folders above it. */
+async function findLabelNames(directory: vscode.Uri): Promise<Record<number, string> | null> {
+  for (let depth = 0; depth < 4; depth++, directory = vscode.Uri.joinPath(directory, '..')) {
+    try {
+      const file = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(directory, 'dataset.json'));
+      const names = datasetLabelNames(JSON.parse(new TextDecoder().decode(file))?.labels);
+      if (names) return names;
+    } catch {
+      // Missing or unreadable: keep walking up.
+    }
+  }
+  return null;
 }
 
 function createNonce(): string {

@@ -36,13 +36,17 @@ body {
 #view3d { width: 100%; height: 100%; min-width: 0; min-height: 0; }
 #viewport .slice { display: none; cursor: crosshair; }
 
-/* Four-up: controls become a top bar and the viewport a 2×2 grid (axial, coronal, sagittal, 3D). */
-#app.quad { display: flex; flex-direction: column; }
-#app.quad #controls { position: relative; top: auto; left: auto; flex: none; order: -1; width: auto; margin: 8px 8px 0; }
+/* Four-up: controls become a top bar, the viewport a 2×2 grid (axial, coronal, sagittal, 3D)
+   and the label list a sidebar column. */
+#app.quad { display: grid; grid-template: auto minmax(0, 1fr) / minmax(0, 1fr) auto; }
+#app.quad #controls { position: relative; top: auto; left: auto; grid-column: 1 / -1; width: auto; margin: 8px 8px 0; }
+#app.quad #mask-legend { position: relative; inset: auto; grid-row: 2; grid-column: 2; margin: 8px 8px 8px 0; }
+#app.quad #mask-legend.collapsed { align-self: start; }
 #app.quad #viewport {
   position: relative;
   display: grid;
-  flex: 1;
+  grid-row: 2;
+  grid-column: 1;
   grid-template: minmax(0, 1fr) minmax(0, 1fr) / minmax(0, 1fr) minmax(0, 1fr);
   gap: 3px;
   height: auto;
@@ -67,6 +71,9 @@ body {
   backdrop-filter: blur(12px);
 }
 
+/* Keep the floating controls clear of the label sidebar. */
+#app:not(.quad):has(#mask-legend:not([hidden])) #controls { width: min(760px, calc(100% - 336px)); }
+
 header {
   display: flex;
   align-items: center;
@@ -85,32 +92,7 @@ header {
 #metadata { margin-top: 3px; color: var(--muted); font-size: 10.5px; }
 
 .view-actions { display: flex; flex: none; align-items: center; gap: 6px; }
-.view-actions select { width: 96px; margin: 0; }
-
-.orientation-toggle {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  width: 72px;
-  padding: 2px;
-  overflow: hidden;
-  color: var(--muted);
-}
-
-.orientation-toggle::before {
-  position: absolute;
-  inset: 2px auto 2px 2px;
-  width: calc(50% - 2px);
-  border-radius: 3px;
-  background: var(--accent);
-  content: '';
-  transition: transform 140ms ease;
-}
-
-.orientation-toggle.active::before { transform: translateX(100%); }
-.orientation-toggle span { position: relative; z-index: 1; align-self: center; font-size: 10px; font-weight: 650; }
-.orientation-toggle:not(.active) span:first-child,
-.orientation-toggle.active span:last-child { color: #fff; }
+.view-actions select { width: auto; margin: 0; }
 
 .control-grid {
   display: grid;
@@ -183,13 +165,14 @@ input[type='range'] {
 #mask-legend {
   position: absolute;
   z-index: 2;
+  top: 14px;
   right: 14px;
   bottom: 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  width: min(460px, calc(100% - 28px));
-  padding: 8px;
+  gap: 7px;
+  width: 300px;
+  padding: 9px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--glass-strong);
@@ -198,16 +181,13 @@ input[type='range'] {
 }
 
 #mask-legend[hidden] { display: none; }
+#mask-legend.collapsed { bottom: auto; }
+#mask-legend.collapsed .legend-body { display: none; }
+#mask-legend.collapsed #legend-collapse { transform: rotate(-90deg); }
 
-.legend-actions {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex: none;
-}
+.legend-head, .legend-actions { display: flex; align-items: center; gap: 5px; flex: none; }
 
 .legend-title {
-  margin-right: auto;
   color: var(--muted);
   font-size: 10px;
   font-weight: 650;
@@ -215,47 +195,61 @@ input[type='range'] {
   text-transform: uppercase;
 }
 
-.legend-actions button {
-  height: 20px;
-  padding: 0 7px;
-  font-size: 10px;
+#legend-count { margin-left: auto; color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+#legend-collapse { width: 22px; height: 20px; padding: 0; font-size: 11px; transition: transform 140ms ease; }
+
+.legend-body { display: flex; flex: 1; flex-direction: column; gap: 6px; min-height: 0; }
+
+#legend-filter {
+  flex: none;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  background: rgba(19, 37, 53, 0.88);
+  font: inherit;
+  outline: none;
 }
+
+.legend-actions button { flex: 1; height: 22px; padding: 0 7px; font-size: 10.5px; }
 
 .legend-labels {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  max-height: 78px;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
   overflow: auto;
 }
 
-.label-chip {
-  display: inline-flex;
+.label-row { display: flex; flex: none; align-items: center; gap: 3px; }
+.label-row[hidden] { display: none; }
+
+.label-toggle {
+  display: flex;
+  flex: 1;
   align-items: center;
-  gap: 4px;
-  height: 19px;
-  margin: 0;
+  gap: 7px;
+  min-width: 0;
+  height: 22px;
   padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-}
-
-.label-chip:hover { border-color: rgba(173, 205, 231, 0.4); }
-
-.label-chip i { width: 9px; height: 9px; border-radius: 2px; }
-
-.label-chip[aria-pressed="false"] {
-  color: rgba(228, 237, 246, 0.34);
+  border-color: transparent;
   background: transparent;
-  text-decoration: line-through;
+  font-size: 11px;
+  text-align: left;
 }
 
-.label-chip[aria-pressed="false"] i { opacity: 0.18; }
+.label-toggle:hover { border-color: transparent; background: rgba(255, 255, 255, 0.07); }
+.label-toggle i { flex: none; width: 10px; height: 10px; border-radius: 2px; }
+.label-toggle b { flex: none; width: 24px; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.label-toggle span { overflow: hidden; text-overflow: ellipsis; }
+.label-toggle[aria-pressed='false'] { color: rgba(228, 237, 246, 0.34); }
+.label-toggle[aria-pressed='false'] span { text-decoration: line-through; }
+.label-toggle[aria-pressed='false'] i { opacity: 0.18; }
+
+.label-only { flex: none; height: 20px; padding: 0 6px; font-size: 10px; opacity: 0; }
+.label-row:hover .label-only, .label-only:focus-visible { opacity: 1; }
 
 #loading, #error {
   position: absolute;
@@ -287,6 +281,15 @@ input[type='range'] {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Narrow: the label list becomes a bottom sheet below the 3D view or the four-up grid. */
+@media (max-width: 900px) {
+  #mask-legend { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: min(42vh, 360px); }
+  #mask-legend.collapsed { height: auto; }
+  #app:not(.quad):has(#mask-legend:not([hidden])) #controls { width: min(760px, calc(100% - 28px)); }
+  #app.quad { grid-template: auto minmax(0, 1fr) auto / minmax(0, 1fr); }
+  #app.quad #mask-legend { grid-row: 3; grid-column: 1; margin: 0 8px 8px; }
+}
+
 @media (max-width: 760px) {
   #controls { top: 8px; left: 8px; width: calc(100% - 16px); }
   .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -303,5 +306,4 @@ input[type='range'] {
   header { align-items: flex-start; }
   #metadata { display: none; }
   .view-actions button { padding-inline: 6px; }
-  .view-actions select { width: 86px; }
 }

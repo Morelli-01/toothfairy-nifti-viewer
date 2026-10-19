@@ -8,11 +8,13 @@ import {
   calculateVolumeRange,
   geometry,
   looksLikeLabelMap,
-  looksUpsideDown,
   orientationCode,
+  orientationMatrix,
+  ORIENTATION_CODES,
   renderSlice,
   slicePlane,
   SLICE_AXES,
+  toothFairyLabelName,
   type Plane,
   type SliceSpec,
   type LabelTextureData,
@@ -21,7 +23,6 @@ import {
 } from './volume-utils';
 
 type RenderStyle = 'mip' | 'amip' | 'iso';
-type AxisOrder = 'xyz' | 'yxz' | 'xzy' | 'zyx' | 'yzx' | 'zxy';
 type DisplayMode = 'cbct' | 'mask' | 'overlay';
 type ScalarArray =
   | Uint8Array | Int8Array | Uint16Array | Int16Array
@@ -38,7 +39,6 @@ interface LoadedVolume {
   datatype: string;
   orientation: string;
   transformSource: string;
-  upsideDown: boolean;
   hasExtraFrames: boolean;
   unit: string;
 }
@@ -48,15 +48,14 @@ interface VolumeView {
   setStyle(style: RenderStyle): void;
   setThreshold(value: number): void;
   setInteractive(active: boolean): void;
-  setAxisOrder(order: AxisOrder): void;
-  setRas(ras: boolean): void;
+  /** Voxel-axis directions (column-major 4×4; translation ignored). */
+  setOrientation(direction: ArrayLike<number>): void;
   setMask(mask: LabelTextureData): void;
   setDisplayMode(mode: DisplayMode): void;
   setMaskOpacity(opacity: number): void;
   setHiddenLabels(labels: Iterable<number>): void;
   resetView(): void;
-  /** Display presentation (LAS mirror · axis swap) and the full volume placement. */
-  matrices(): { presentation: THREE.Matrix4; volume: THREE.Matrix4 };
+  volumeMatrix(): THREE.Matrix4;
   setAxialView(): void;
   requestRender(): void;
   dispose(): void;
@@ -79,8 +78,7 @@ const loadingMessage = requiredElement<HTMLElement>('loading-message');
 const errorBox = requiredElement<HTMLElement>('error');
 const metadata = requiredElement<HTMLElement>('metadata');
 const styleControl = requiredElement<HTMLSelectElement>('render-style');
-const axisOrderControl = requiredElement<HTMLSelectElement>('axis-order');
-const orientationControl = requiredElement<HTMLButtonElement>('orientation-toggle');
+const orientationControl = requiredElement<HTMLSelectElement>('orientation');
 const levelControl = requiredElement<HTMLInputElement>('level');
 const windowControl = requiredElement<HTMLInputElement>('window');
 const thresholdControl = requiredElement<HTMLInputElement>('threshold');
@@ -98,6 +96,10 @@ const maskLegend = requiredElement<HTMLElement>('mask-legend');
 const legendLabels = requiredElement<HTMLElement>('legend-labels');
 const legendAllControl = requiredElement<HTMLButtonElement>('legend-all');
 const legendNoneControl = requiredElement<HTMLButtonElement>('legend-none');
+const legendInvertControl = requiredElement<HTMLButtonElement>('legend-invert');
+const legendFilter = requiredElement<HTMLInputElement>('legend-filter');
+const legendCount = requiredElement<HTMLElement>('legend-count');
+const legendCollapse = requiredElement<HTMLButtonElement>('legend-collapse');
 const resetContrastControl = requiredElement<HTMLButtonElement>('reset-contrast');
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
@@ -107,11 +109,14 @@ let loaded: LoadedVolume | undefined;
 let volumeView: VolumeView | undefined;
 let level = 0;
 let width = 1;
-let ras = true;
 let disposed = false;
 let externalMaskLoaded = false;
 let currentMaskPrepared = false;
 const hiddenLabels = new Set<number>();
+let maskLabels: number[] = [];
+type LabelNames = Record<number, string> | null;
+/** Names from a dataset.json beside the open file (null: none found). */
+const fileLabelNames = JSON.parse(app.dataset.labelNames || 'null') as LabelNames;
 let maskSource: LoadedVolume | undefined;
 let quad = false;
 const cursor = [0, 0, 0];
@@ -124,16 +129,14 @@ styleControl.addEventListener('change', () => {
   thresholdLabel.hidden = style !== 'iso';
   volumeView?.setStyle(style);
 });
-axisOrderControl.addEventListener('change', () => {
-  volumeView?.setAxisOrder(axisOrderControl.value as AxisOrder);
-  drawSlices();
-});
-orientationControl.addEventListener('click', () => {
-  ras = !ras;
-  syncOrientationControl();
-  volumeView?.setRas(ras);
-  drawSlices();
-});
+orientationControl.append(...([['Assign to voxel axes i·j·k', ORIENTATION_CODES.slice(0, 8)],
+  ['Permuted axes', ORIENTATION_CODES.slice(8)]] as const).map(([label, codes]) => {
+  const group = document.createElement('optgroup');
+  group.label = label;
+  group.append(...codes.map(code => new Option(code, code)));
+  return group;
+}));
+orientationControl.addEventListener('change', applyOrientation);
 layoutControl.addEventListener('click', () => {
   quad = !quad;
   app.classList.toggle('quad', quad);
@@ -170,8 +173,29 @@ maskOpacityControl.addEventListener('input', () => {
 maskOpacityControl.addEventListener('pointerdown', () => volumeView?.setInteractive(true));
 maskOpacityControl.addEventListener('pointerup', () => volumeView?.setInteractive(false));
 maskOpacityControl.addEventListener('pointercancel', () => volumeView?.setInteractive(false));
-legendAllControl.addEventListener('click', () => setAllLabelsVisible(true));
-legendNoneControl.addEventListener('click', () => setAllLabelsVisible(false));
+legendAllControl.addEventListener('click', () => setLabelsVisible(listedLabels(), true));
+legendNoneControl.addEventListener('click', () => setLabelsVisible(listedLabels(), false));
+legendInvertControl.addEventListener('click', () => {
+  for (const label of listedLabels()) if (!hiddenLabels.delete(label)) hiddenLabels.add(label);
+  applyHiddenLabels();
+});
+legendFilter.addEventListener('input', filterLegend);
+legendCollapse.addEventListener('click', () => {
+  const collapsed = maskLegend.classList.toggle('collapsed');
+  legendCollapse.setAttribute('aria-expanded', String(!collapsed));
+});
+legendLabels.addEventListener('click', event => {
+  const button = (event.target as Element).closest('button');
+  const label = Number(button?.parentElement?.dataset.label);
+  if (!button || !label) return;
+  if (button.classList.contains('label-only')) {
+    hiddenLabels.clear();
+    maskLabels.forEach(other => other !== label && hiddenLabels.add(other));
+    applyHiddenLabels();
+  } else {
+    setLabelsVisible([label], hiddenLabels.has(label));
+  }
+});
 levelControl.addEventListener('input', updateWindowFromControls);
 windowControl.addEventListener('input', updateWindowFromControls);
 thresholdControl.addEventListener('input', () => {
@@ -190,9 +214,9 @@ requiredElement<HTMLButtonElement>('axial-camera').addEventListener('click', () 
 resetContrastControl.addEventListener('click', resetContrast);
 
 window.addEventListener('message', event => {
-  const message = event.data as { type?: string; uri?: string; filename?: string };
+  const message = event.data as { type?: string; uri?: string; filename?: string; labelNames?: LabelNames };
   if (message?.type === 'maskSelected' && message.uri) {
-    void loadExternalMask(message.uri, message.filename ?? 'Segmentation mask');
+    void loadExternalMask(message.uri, message.filename ?? 'Segmentation mask', message.labelNames ?? null);
   }
 });
 
@@ -235,8 +259,7 @@ async function loadVolume(): Promise<void> {
     applyClim();
     volumeView.setStyle(styleControl.value as RenderStyle);
     volumeView.setThreshold(Number(thresholdControl.value) / 100);
-    volumeView.setAxisOrder(axisOrderControl.value as AxisOrder);
-    volumeView.setRas(ras);
+    applyOrientation();
     volumeView.setMaskOpacity(Number(maskOpacityControl.value) / 100);
     if (looksLikeLabelMap(loaded.values, loaded.slope, loaded.intercept)) {
       displayModeControl.value = 'mask';
@@ -278,8 +301,6 @@ function parseNifti(data: ArrayBuffer): LoadedVolume {
     datatype: header.getDatatypeCodeString(header.datatypeCode),
     orientation: orientationCode(spatial.matrix),
     transformSource: header.sform_code > 0 ? 'sform' : header.qform_code > 0 ? 'qform' : 'pixdim fallback',
-    upsideDown: looksUpsideDown(values, dimensions, spatial.matrix, slope, intercept,
-      looksLikeLabelMap(values, slope, intercept) ? undefined : range),
     hasExtraFrames: header.dims.slice(4, header.dims[0] + 1).some(dimension => dimension > 1),
     unit: spatial.unit,
   };
@@ -356,16 +377,20 @@ function configureControls(volume: LoadedVolume): void {
     volume.dimensions.join(' × '),
     `${volume.spacing.map(formatNumber).join(' × ')} ${volume.unit}`,
     volume.datatype,
-    `${volume.transformSource} ${volume.orientation}${volume.upsideDown ? ' (S/I auto-flipped)' : ''}`,
+    `${volume.transformSource} ${volume.orientation}`,
+    `origin (${[12, 13, 14].map(index => formatNumber(volume.direction[index])).join(', ')}) ${volume.unit}`,
     `GPU ${buildPreviewSize(volume.dimensions).join(' × ')}`,
     volume.hasExtraFrames ? 'first 3D frame' : '',
   ].filter(Boolean).join(' · ');
+  orientationControl.options[0].text = `Header (${volume.orientation})`;
 }
 
-function syncOrientationControl(): void {
-  orientationControl.classList.toggle('active', ras);
-  orientationControl.setAttribute('aria-checked', String(ras));
-  orientationControl.setAttribute('aria-label', `Orientation: ${ras ? 'RAS' : 'LAS'}`);
+/** Header transform, the raw voxel grid (i·j·k drawn as R·A·S), or a code assigned to i·j·k. */
+function applyOrientation(): void {
+  if (!loaded || !volumeView) return;
+  const mode = orientationControl.value;
+  volumeView.setOrientation(mode === 'header' ? loaded.direction : orientationMatrix(mode === 'raw' ? 'RAS' : mode));
+  drawSlices();
 }
 
 async function prepareCurrentAsMask(): Promise<void> {
@@ -383,7 +408,7 @@ async function prepareCurrentAsMask(): Promise<void> {
   maskSource = loaded;
   currentMaskPrepared = true;
   maskName.textContent = `${app.dataset.filename ?? 'Current volume'} · ${mask.labels.length} labels`;
-  renderMaskLegend(mask.labels);
+  renderMaskLegend(mask.labels, fileLabelNames);
   volumeView.setDisplayMode('mask');
 }
 
@@ -404,7 +429,7 @@ async function applyDisplayMode(): Promise<void> {
   loading.hidden = true;
 }
 
-async function loadExternalMask(uri: string, filename: string): Promise<void> {
+async function loadExternalMask(uri: string, filename: string, names: LabelNames): Promise<void> {
   if (!loaded || !volumeView) return;
   try {
     setLoading('Reading segmentation mask…');
@@ -432,7 +457,7 @@ async function loadExternalMask(uri: string, filename: string): Promise<void> {
     maskSource = maskVolume;
     externalMaskLoaded = true;
     maskName.textContent = `${filename} · ${mask.labels.length} labels`;
-    renderMaskLegend(mask.labels);
+    renderMaskLegend(mask.labels, names);
     displayModeControl.value = 'overlay';
     volumeView.setDisplayMode('overlay');
     syncMaskControls();
@@ -466,53 +491,59 @@ function syncMaskControls(): void {
   maskLegend.hidden = mode === 'cbct' || !legendLabels.childElementCount;
 }
 
-function renderMaskLegend(labels: number[]): void {
+/** One row per class: click toggles, "Only" solos; dataset.json names win over built-in ToothFairy names. */
+function renderMaskLegend(labels: number[], names: LabelNames): void {
+  maskLabels = labels;
   hiddenLabels.clear();
   legendLabels.replaceChildren(...labels.map(label => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'label-chip';
-    chip.dataset.label = String(label);
-    chip.setAttribute('aria-pressed', 'true');
-    chip.setAttribute('aria-label', `Class ${label}, shown`);
+    const name = (names ? names[label] : toothFairyLabelName(label)) ?? `Label ${label}`;
+    const row = document.createElement('div');
+    row.className = 'label-row';
+    row.dataset.label = String(label);
+    row.dataset.search = `${label} ${name}`.toLowerCase();
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'label-toggle';
+    toggle.title = `${label} · ${name}`;
     const swatch = document.createElement('i');
     swatch.style.background = labelColorCss(label);
-    chip.append(swatch, document.createTextNode(String(label)));
-    chip.addEventListener('click', () => toggleLabel(label));
-    return chip;
+    const id = document.createElement('b');
+    id.textContent = String(label);
+    const text = document.createElement('span');
+    text.textContent = name;
+    toggle.append(swatch, id, text);
+    const only = document.createElement('button');
+    only.type = 'button';
+    only.className = 'label-only';
+    only.textContent = 'Only';
+    only.setAttribute('aria-label', `Show only ${name}`);
+    row.append(toggle, only);
+    return row;
   }));
+  legendFilter.value = '';
   applyHiddenLabels();
   syncMaskControls();
 }
 
-/** Toggle one class on/off and keep its legend chip in sync. */
-function toggleLabel(label: number): void {
-  if (hiddenLabels.has(label)) hiddenLabels.delete(label);
-  else hiddenLabels.add(label);
-  updateLabelChip(label);
-  applyHiddenLabels();
+function filterLegend(): void {
+  const terms = legendFilter.value.toLowerCase().split(/\s+/).filter(Boolean);
+  for (const row of legendRows()) row.hidden = !terms.every(term => row.dataset.search?.includes(term));
 }
 
-function setLabelVisible(label: number, visible: boolean): void {
-  if (visible) hiddenLabels.delete(label);
-  else hiddenLabels.add(label);
-  updateLabelChip(label);
+function legendRows(): HTMLElement[] {
+  return Array.from(legendLabels.children) as HTMLElement[];
 }
 
-function updateLabelChip(label: number): void {
-  const chip = legendLabels.querySelector<HTMLElement>(`[data-label="${label}"]`);
-  if (!chip) return;
-  const visible = !hiddenLabels.has(label);
-  chip.setAttribute('aria-pressed', String(visible));
-  chip.setAttribute('aria-label', `Class ${label}, ${visible ? 'shown' : 'hidden'}`);
+/** Labels whose rows pass the filter: the targets of Show all / Hide all / Invert. */
+function listedLabels(): number[] {
+  return legendRows().filter(row => !row.hidden).map(row => Number(row.dataset.label));
 }
 
-function setAllLabelsVisible(visible: boolean): void {
-  legendLabels.querySelectorAll<HTMLElement>('.label-chip').forEach(chip => {
-    const label = Number(chip.dataset.label);
-    if (!Number.isFinite(label)) return;
-    setLabelVisible(label, visible);
-  });
+function setLabelsVisible(labels: Iterable<number>, visible: boolean): void {
+  for (const label of labels) {
+    if (visible) hiddenLabels.delete(label);
+    else hiddenLabels.add(label);
+  }
   applyHiddenLabels();
 }
 
@@ -564,6 +595,10 @@ function applyClim(): void {
 }
 
 function applyHiddenLabels(): void {
+  for (const row of legendRows()) {
+    row.firstElementChild?.setAttribute('aria-pressed', String(!hiddenLabels.has(Number(row.dataset.label))));
+  }
+  legendCount.textContent = `${maskLabels.length - hiddenLabels.size} / ${maskLabels.length} shown`;
   volumeView?.setHiddenLabels(hiddenLabels);
   drawSlices();
 }
@@ -577,6 +612,7 @@ function drawSlices(): void {
     sliceFrame = undefined;
     if (!loaded || !volumeView) return;
     sliceGeometry = computeSliceGeometry(loaded, volumeView);
+    clampCursor();
     const mode = displayModeControl.value as DisplayMode;
     const colors = labelPalette();
     for (const label of hiddenLabels) colors[label * 4 + 3] = 0;
@@ -589,9 +625,8 @@ function drawSlices(): void {
 
 /** Full-resolution voxel <-> display-world mapping shared with the 3D view (same centring). */
 function computeSliceGeometry(volume: LoadedVolume, view: VolumeView) {
-  const { presentation, volume: placement } = view.matrices();
   const [nx, ny, nz] = volume.dimensions;
-  const voxelToWorld = placement
+  const voxelToWorld = view.volumeMatrix()
     .multiply(new THREE.Matrix4().makeScale(...volume.spacing))
     .multiply(new THREE.Matrix4().makeTranslation(-(nx - 1) / 2, -(ny - 1) / 2, -(nz - 1) / 2));
   const bounds = new THREE.Box3();
@@ -606,8 +641,9 @@ function computeSliceGeometry(volume: LoadedVolume, view: VolumeView) {
   const step = [0, 1, 2].map(axis => Math.max(...[0, 1, 2].map(column => Math.abs(e[column * 4 + axis]))));
   const size = bounds.getSize(new THREE.Vector3());
   return {
-    presentation,
     worldToVoxel: voxelToWorld.clone().invert().elements,
+    /** Display-world centre of voxel (0, 0, 0), the image origin. */
+    origin: new THREE.Vector3().applyMatrix4(voxelToWorld).toArray(),
     min: bounds.min.toArray(),
     max: bounds.max.toArray(),
     step,
@@ -639,8 +675,11 @@ function drawSlice(plane: Plane, geometry: SliceGeometry, mask: Parameters<typeo
   sliceLayouts.set(plane, { spec, scale, left, top });
 
   const { u, uSign, v, vSign, normal } = SLICE_AXES[plane];
-  const x = left + ((cursor[u] - spec.topLeft[u]) / (uSign * spec.pixelSize) + 0.5) * scale;
-  const y = top + ((cursor[v] - spec.topLeft[v]) / (vSign * spec.pixelSize) + 0.5) * scale;
+  const toCanvas = (point: number[]) => [
+    left + ((point[u] - spec.topLeft[u]) / (uSign * spec.pixelSize) + 0.5) * scale,
+    top + ((point[v] - spec.topLeft[v]) / (vSign * spec.pixelSize) + 0.5) * scale,
+  ];
+  const [x, y] = toCanvas(cursor);
   context.lineWidth = dpr;
   context.strokeStyle = PLANE_COLORS[PLANE_WITH_NORMAL[u]];
   context.beginPath();
@@ -653,33 +692,40 @@ function drawSlice(plane: Plane, geometry: SliceGeometry, mask: Parameters<typeo
   context.lineTo(left + spec.width * scale, y);
   context.stroke();
 
+  // Image origin (voxel 0,0,0) projected into this plane, kept fully on screen at the image
+  // corner where it usually sits.
+  const ring = 4 * dpr;
+  const [ox, oy] = toCanvas(geometry.origin).map((value, axis) =>
+    THREE.MathUtils.clamp(value, ring + dpr, (axis ? canvas.height : canvas.width) - ring - dpr));
+  context.strokeStyle = '#fff';
+  context.lineWidth = 1.5 * dpr;
+  context.beginPath();
+  context.arc(ox, oy, ring, 0, Math.PI * 2);
+  context.stroke();
+
   const pad = 7 * dpr;
-  const p = geometry.presentation;
+  const raw = orientationControl.value === 'raw';
   context.font = `600 ${11 * dpr}px sans-serif`;
   context.textAlign = 'left';
   context.textBaseline = 'top';
   context.fillStyle = PLANE_COLORS[plane];
-  context.fillText(`${plane[0].toUpperCase()}${plane.slice(1)}  ${formatNumber(cursor[normal])} mm`, pad, pad);
+  const title = raw ? `${'ijk'[normal]} plane` : `${plane[0].toUpperCase()}${plane.slice(1)}`;
+  context.fillText(`${title}  ${formatNumber(cursor[normal])} mm`, pad, pad);
   context.fillStyle = 'rgba(245, 249, 252, 0.82)';
   context.textBaseline = 'middle';
-  context.fillText(directionLabel(p, u, -uSign), pad, canvas.height / 2);
+  context.fillText(directionLabel(raw, u, -uSign), pad, canvas.height / 2);
   context.textAlign = 'right';
-  context.fillText(directionLabel(p, u, uSign), canvas.width - pad, canvas.height / 2);
+  context.fillText(directionLabel(raw, u, uSign), canvas.width - pad, canvas.height / 2);
   context.textAlign = 'center';
   context.textBaseline = 'top';
-  context.fillText(directionLabel(p, v, -vSign), canvas.width / 2, pad);
+  context.fillText(directionLabel(raw, v, -vSign), canvas.width / 2, pad);
   context.textBaseline = 'bottom';
-  context.fillText(directionLabel(p, v, vSign), canvas.width / 2, canvas.height - pad);
+  context.fillText(directionLabel(raw, v, vSign), canvas.width / 2, canvas.height - pad);
 }
 
-/** Patient direction (R/L, A/P, S/I) of a signed display axis, undoing any axis swap or LAS mirror. */
-function directionLabel(presentation: THREE.Matrix4, axis: number, sign: number): string {
-  const e = presentation.elements;
-  let best = 0;
-  for (let column = 1; column < 3; column++) {
-    if (Math.abs(e[column * 4 + axis]) > Math.abs(e[best * 4 + axis])) best = column;
-  }
-  return (e[best * 4 + axis] * sign > 0 ? 'RAS' : 'LPI')[best];
+/** Patient direction (R/L, A/P, S/I) of a signed display axis; raw mode names the voxel axis instead. */
+function directionLabel(raw: boolean, axis: number, sign: number): string {
+  return raw ? `${sign > 0 ? '+' : '−'}${'ijk'[axis]}` : (sign > 0 ? 'RAS' : 'LPI')[axis];
 }
 
 function moveCursor(plane: Plane, event: PointerEvent): void {
@@ -785,11 +831,7 @@ function createVolumeView(
   );
 
   const volumeGroup = new THREE.Group();
-  const direction = new THREE.Matrix4().fromArray(volume.direction);
-  direction.setPosition(0, 0, 0);
-  if (volume.upsideDown) direction.premultiply(new THREE.Matrix4().makeScale(1, 1, -1));
   volumeGroup.matrixAutoUpdate = false;
-  volumeGroup.matrix.copy(direction);
   volumeGroup.add(mesh);
   const maskPalette = createMaskPalette();
   let maskTexture = createEmptyMaskTexture();
@@ -814,11 +856,37 @@ function createVolumeView(
   maskMesh.renderOrder = 1;
   maskMesh.visible = false;
   volumeGroup.add(maskMesh);
+  // Image origin: voxel (0, 0, 0) with arrows toward increasing i, j, k. WebGL lines are
+  // always 1 px, so shafts are thin cylinders capped by cones. Drawn last and without
+  // depth so the volume never hides them.
+  const axisLength = Math.max(physical.x, physical.y, physical.z) * 0.18;
+  const axisRadius = axisLength * 0.03;
+  const originAxes = new THREE.Group();
+  originAxes.position.set(...volume.spacing.map((spacing, axis) => -spacing * (volume.dimensions[axis] - 1) / 2) as [number, number, number]);
+  // Both pieces point along +Y; each axis turns them onto x (i), y (j) or z (k).
+  const arrowParts = [
+    new THREE.CylinderGeometry(axisRadius, axisRadius, axisLength * 0.78, 12).translate(0, axisLength * 0.39, 0),
+    new THREE.ConeGeometry(axisRadius * 2.8, axisLength * 0.22, 16).translate(0, axisLength * 0.89, 0),
+  ];
+  const turns = [new THREE.Euler(0, 0, -Math.PI / 2), new THREE.Euler(), new THREE.Euler(Math.PI / 2, 0, 0)];
+  const axisColors = ['#ff5a4e', '#5bd16a', '#5a8dff'];
+  const axisMaterials = axisColors.map(color => new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }));
+  const axisLabels = axisColors.map((color, axis) => {
+    for (const part of arrowParts) {
+      const piece = new THREE.Mesh(part, axisMaterials[axis]);
+      piece.rotation.copy(turns[axis]);
+      piece.renderOrder = 2;
+      originAxes.add(piece);
+    }
+    const sprite = textSprite('ijk'[axis], color, axisLength * 0.22);
+    sprite.position.setComponent(axis, axisLength * 1.14);
+    originAxes.add(sprite);
+    return sprite;
+  });
+  volumeGroup.add(originAxes);
   const scene = new THREE.Scene();
   scene.add(volumeGroup);
 
-  let currentAxisOrder: AxisOrder = 'xyz';
-  let currentRas = true;
   let currentDisplayMode: DisplayMode = 'cbct';
   let maskAvailable = false;
 
@@ -857,14 +925,6 @@ function createVolumeView(
     interactionActive = active;
     syncSize();
   };
-  let presentation = new THREE.Matrix4();
-  const applyPresentation = () => {
-    presentation = (currentRas ? new THREE.Matrix4() : new THREE.Matrix4().makeScale(-1, 1, 1))
-      .multiply(axisOrderMatrix(currentAxisOrder));
-    volumeGroup.matrix.copy(presentation).multiply(direction);
-    volumeGroup.updateMatrixWorld(true);
-    requestRender();
-  };
   const updateVisibility = () => {
     mesh.visible = currentDisplayMode !== 'mask';
     maskMesh.visible = maskAvailable && currentDisplayMode !== 'cbct';
@@ -894,13 +954,10 @@ function createVolumeView(
       requestRender();
     },
     setInteractive,
-    setAxisOrder: (order) => {
-      currentAxisOrder = order;
-      applyPresentation();
-    },
-    setRas: (value) => {
-      currentRas = value;
-      applyPresentation();
+    setOrientation: (direction) => {
+      volumeGroup.matrix.fromArray(direction).setPosition(0, 0, 0);
+      volumeGroup.updateMatrixWorld(true);
+      requestRender();
     },
     setMask: (mask) => {
       if (mask.dimensions[0] !== dx || mask.dimensions[1] !== dy || mask.dimensions[2] !== dz) {
@@ -958,7 +1015,7 @@ function createVolumeView(
       controls.update();
       requestRender();
     },
-    matrices: () => ({ presentation: presentation.clone(), volume: volumeGroup.matrix.clone() }),
+    volumeMatrix: () => volumeGroup.matrix.clone(),
     requestRender,
     dispose: () => {
       destroyed = true;
@@ -972,21 +1029,39 @@ function createVolumeView(
       maskTexture.dispose();
       maskPalette.dispose();
       ramp.dispose();
+      arrowParts.forEach(part => part.dispose());
+      axisMaterials.forEach(material => material.dispose());
+      axisLabels.forEach(sprite => {
+        sprite.material.map?.dispose();
+        sprite.material.dispose();
+      });
       renderer.dispose();
       renderer.domElement.remove();
     },
   };
 }
 
-function axisOrderMatrix(order: AxisOrder): THREE.Matrix4 {
-  const sourceForOutput = order.split('').map(axis => 'xyz'.indexOf(axis));
-  const rows = sourceForOutput.map(source => [0, 1, 2].map(column => Number(column === source)));
-  return new THREE.Matrix4().set(
-    rows[0][0], rows[0][1], rows[0][2], 0,
-    rows[1][0], rows[1][1], rows[1][2], 0,
-    rows[2][0], rows[2][1], rows[2][2], 0,
-    0, 0, 0, 1,
-  );
+/** Camera-facing text label that ignores depth (drawn over the volume). */
+function textSprite(text: string, color: string, height: number): THREE.Sprite {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  const font = '600 48px sans-serif';
+  if (context) context.font = font;
+  canvas.width = Math.ceil((context?.measureText(text).width ?? 48) + 16);
+  canvas.height = 64;
+  if (context) {
+    context.font = font;
+    context.textBaseline = 'middle';
+    context.fillStyle = color;
+    context.fillText(text, 8, 34);
+  }
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({ map, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(height * canvas.width / canvas.height, height, 1);
+  sprite.renderOrder = 3;
+  return sprite;
 }
 
 function labelHue(label: number): number {
@@ -1171,4 +1246,3 @@ window.addEventListener('pagehide', () => {
   loaded = undefined;
 }, { once: true });
 
-syncOrientationControl();

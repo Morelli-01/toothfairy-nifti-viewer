@@ -8,4 +8,7 @@ tsconfig.json
 dist/*.map
 .gitignore
 .code-review-graph/**
+.venv/**
 media/screenshot.png
+ToothFairy*
+ToothFairy*/**

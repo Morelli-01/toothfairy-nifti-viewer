@@ -47,6 +47,24 @@ export function orientationCode(matrix: ArrayLike<number>): string {
   }).join('');
 }
 
+const AXIS_LETTERS = ['RL', 'AP', 'SI'];
+
+/** All 48 axis-aligned orientation codes, the 8 unpermuted ones (RAS, LAS, RPS, LPS, RAI, LAI, RPI, LPI) first. */
+export const ORIENTATION_CODES = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+  .flatMap(axes => [0, 1, 2, 3, 4, 5, 6, 7].map(signs =>
+    axes.map((axis, column) => AXIS_LETTERS[axis][(signs >> column) & 1]).join('')));
+
+/** Direction matrix (column-major 4×4) whose voxel i/j/k axes point toward the code's letters, e.g. 'LPI'. */
+export function orientationMatrix(code: string): Float32Array {
+  const matrix = new Float32Array(16);
+  matrix[15] = 1;
+  for (let column = 0; column < 3; column++) {
+    const axis = AXIS_LETTERS.findIndex(letters => letters.includes(code[column]));
+    matrix[column * 4 + axis] = AXIS_LETTERS[axis][0] === code[column] ? 1 : -1;
+  }
+  return matrix;
+}
+
 export function clampWindow(lower: number, upper: number, changed: 'lower' | 'upper'): [number, number] {
   lower = Math.max(0, Math.min(999, lower));
   upper = Math.max(1, Math.min(1000, upper));
@@ -198,7 +216,9 @@ export function buildLabelTexture(
   const output = new Uint8Array(dx * dy * dz);
   const counts = new Uint16Array(256);
   const touched = new Uint8Array(256);
-  const labels = new Set<number>();
+  // Listed from full-resolution voxels: a class that never wins a block still
+  // shows in the full-resolution slices and must stay toggleable.
+  const present = new Uint8Array(256);
   const scale = Number.isFinite(slope) && slope !== 0 ? slope : 1;
   const offset = scale === slope && Number.isFinite(intercept) ? intercept : 0;
 
@@ -215,6 +235,7 @@ export function buildLabelTexture(
             for (let x = ox * steps[0]; x < xEnd; x += 1) {
               const label = Math.max(0, Math.min(255, Math.round(Number(values[base + x]) * scale + offset)));
               if (!label) continue;
+              present[label] = 1;
               if (counts[label] === 0) touched[touchedCount++] = label;
               counts[label] += 1;
             }
@@ -231,62 +252,11 @@ export function buildLabelTexture(
           counts[label] = 0;
         }
         output[ox + oy * dx + oz * dx * dy] = winner;
-        if (winner) labels.add(winner);
       }
     }
   }
-  return { data: output, dimensions: outputDimensions, steps, labels: [...labels].sort((a, b) => a - b) };
-}
-
-/**
- * True when the header's superior end is anatomically inferior. Dental CBCTs
- * hold almost no bone below the mandible, so the end with less bone (top vs
- * bottom 15% of slices) is inferior; label maps (range omitted) compare FDI
- * upper (11–28) against lower (31–48) teeth instead. Ties trust the header.
- * ponytail: validated on 532 inverted ToothFairy3 scans (3 missed: low FOVs
- * dominated by the mandible) and 50 correct TF4 scans (none flipped).
- */
-export function looksUpsideDown(
-  values: ArrayLike<number>,
-  dimensions: [number, number, number],
-  matrix: ArrayLike<number>,
-  slope: number,
-  intercept: number,
-  range?: Pick<VolumeRange, 'low' | 'high'>,
-): boolean {
-  let axis = 0;
-  for (let column = 1; column < 3; column++) {
-    if (Math.abs(matrix[column * 4 + 2]) > Math.abs(matrix[axis * 4 + 2])) axis = column;
-  }
-  const towardSuperior = matrix[axis * 4 + 2] > 0;
-  const [nx, ny, nz] = dimensions;
-  const n = dimensions[axis];
-  const upper = new Float64Array(n);
-  const lower = new Float64Array(n);
-  const scale = Number.isFinite(slope) && slope !== 0 ? slope : 1;
-  const offset = scale === slope && Number.isFinite(intercept) ? intercept : 0;
-  const bone = range ? range.low + 0.6 * (range.high - range.low) : Infinity;
-  for (let z = 0, index = 0; z < nz; z++) {
-    for (let y = 0; y < ny; y++) {
-      for (let x = 0; x < nx; x++, index++) {
-        const value = Number(values[index]) * scale + offset;
-        const slice = axis === 0 ? x : axis === 1 ? y : z;
-        if (range) { if (value > bone) upper[slice]++; }
-        else if (value >= 11 && value <= 28) upper[slice]++;
-        else if (value >= 31 && value <= 48) lower[slice]++;
-      }
-    }
-  }
-  const sum = (a: Float64Array, from = 0, to = n) => a.slice(from, to).reduce((s, v) => s + v, 0);
-  const mean = (a: Float64Array) => a.reduce((s, v, i) => s + v * i, 0) / sum(a);
-  if (range) {
-    const q = Math.max(1, Math.floor(n * 0.15));
-    const first = sum(upper, 0, q);
-    const last = sum(upper, n - q);
-    return towardSuperior ? last < first : first < last;
-  }
-  if (!sum(upper) || !sum(lower)) return false;
-  return towardSuperior ? mean(upper) < mean(lower) : mean(upper) > mean(lower);
+  const labels = [...present.keys()].filter(label => present[label]);
+  return { data: output, dimensions: outputDimensions, steps, labels };
 }
 
 /** Conservative heuristic used only to pick the initial mask-only mode. */
@@ -304,6 +274,34 @@ export function looksLikeLabelMap(values: ArrayLike<number>, slope: number, inte
   return labels.size > 1;
 }
 
+const TOOTH_NAMES = ['Central Incisor', 'Lateral Incisor', 'Canine', 'First Premolar', 'Second Premolar',
+  'First Molar', 'Second Molar', 'Third Molar (Wisdom Tooth)'];
+const QUADRANT_NAMES = ['Upper Right', 'Upper Left', 'Lower Left', 'Lower Right'];
+const TOOTHFAIRY_STRUCTURES: Record<number, string> = {
+  1: 'Lower Jawbone', 2: 'Upper Jawbone', 3: 'Left Inferior Alveolar Canal', 4: 'Right Inferior Alveolar Canal',
+  5: 'Left Maxillary Sinus', 6: 'Right Maxillary Sinus', 7: 'Pharynx', 8: 'Bridge', 9: 'Crown', 10: 'Implant',
+  103: 'Left Mandibular Incisive Canal', 104: 'Right Mandibular Incisive Canal', 105: 'Lingual Canal',
+};
+
+/** ToothFairy2/3 class name (FDI teeth 11–48, pulps 111–148); used when no dataset.json names the labels. */
+export function toothFairyLabelName(label: number): string | undefined {
+  if (TOOTHFAIRY_STRUCTURES[label]) return TOOTHFAIRY_STRUCTURES[label];
+  const quadrant = QUADRANT_NAMES[Math.floor((label % 100) / 10) - 1];
+  const tooth = TOOTH_NAMES[(label % 10) - 1];
+  if (!quadrant || !tooth || label > 148) return undefined;
+  return `${quadrant} ${tooth}${label > 100 ? ' Pulp' : ''}`;
+}
+
+/** Class names from a dataset.json `labels` object: nnU-Net (name → id) or MSD (id → name). */
+export function datasetLabelNames(labels: unknown): Record<number, string> | null {
+  const names: Record<number, string> = {};
+  for (const [key, value] of Object.entries(labels ?? {})) {
+    if (typeof value === 'number') names[value] = key;
+    else if (typeof value === 'string' && /^\d+$/.test(key)) names[Number(key)] = value;
+  }
+  return Object.keys(names).length ? names : null;
+}
+
 export type Plane = 'axial' | 'coronal' | 'sagittal';
 
 /**
@@ -316,6 +314,7 @@ export const SLICE_AXES: Record<Plane, { u: number; uSign: number; v: number; vS
   coronal: { u: 0, uSign: -1, v: 2, vSign: -1, normal: 1 },
   sagittal: { u: 1, uSign: -1, v: 2, vSign: -1, normal: 0 },
 };
+
 
 export interface SliceSpec {
   width: number;
