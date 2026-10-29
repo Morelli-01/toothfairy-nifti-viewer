@@ -101,6 +101,9 @@ const legendFilter = requiredElement<HTMLInputElement>('legend-filter');
 const legendCount = requiredElement<HTMLElement>('legend-count');
 const legendCollapse = requiredElement<HTMLButtonElement>('legend-collapse');
 const resetContrastControl = requiredElement<HTMLButtonElement>('reset-contrast');
+const controlsPanel = requiredElement<HTMLElement>('controls');
+const controlsHeader = controlsPanel.querySelector('header')!;
+const controlsCollapse = requiredElement<HTMLButtonElement>('controls-collapse');
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
@@ -184,6 +187,27 @@ legendCollapse.addEventListener('click', () => {
   const collapsed = maskLegend.classList.toggle('collapsed');
   legendCollapse.setAttribute('aria-expanded', String(!collapsed));
 });
+controlsCollapse.addEventListener('click', () => {
+  const collapsed = controlsPanel.classList.toggle('collapsed');
+  controlsCollapse.setAttribute('aria-expanded', String(!collapsed));
+});
+// Drag the floating controls by their header; the four-up layout docks them as a top bar instead.
+let controlsDrag: { x: number; y: number } | undefined;
+controlsHeader.addEventListener('pointerdown', event => {
+  if (quad || event.button !== 0 || (event.target as Element).closest('button, select')) return;
+  controlsHeader.setPointerCapture(event.pointerId);
+  controlsDrag = { x: event.clientX - controlsPanel.offsetLeft, y: event.clientY - controlsPanel.offsetTop };
+});
+controlsHeader.addEventListener('pointermove', event => {
+  if (controlsDrag) placeControls(event.clientX - controlsDrag.x, event.clientY - controlsDrag.y);
+});
+controlsHeader.addEventListener('lostpointercapture', () => { controlsDrag = undefined; });
+// Folding, unfolding, the label sidebar or a window resize change the panel's size: keep it on screen.
+const controlsResize = new ResizeObserver(() => {
+  if (!quad) placeControls(controlsPanel.offsetLeft, controlsPanel.offsetTop);
+});
+controlsResize.observe(controlsPanel);
+controlsResize.observe(app);
 legendLabels.addEventListener('click', event => {
   const button = (event.target as Element).closest('button');
   const label = Number(button?.parentElement?.dataset.label);
@@ -1227,6 +1251,14 @@ function showError(error: unknown): void {
   errorBox.hidden = false;
   errorBox.textContent = error instanceof Error ? error.message : String(error);
   console.error(error);
+}
+
+/** Move the floating controls to (left, top), clamped so the whole panel stays inside the webview. */
+function placeControls(left: number, top: number): void {
+  const x = Math.max(0, Math.min(left, app.clientWidth - controlsPanel.offsetWidth));
+  const y = Math.max(0, Math.min(top, app.clientHeight - controlsPanel.offsetHeight));
+  controlsPanel.style.setProperty('--controls-x', `${x}px`);
+  controlsPanel.style.setProperty('--controls-y', `${y}px`);
 }
 
 function nextFrame(): Promise<void> {

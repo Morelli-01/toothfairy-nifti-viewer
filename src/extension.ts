@@ -124,7 +124,7 @@ function getHtml(options: {
     </div>
     <section id="controls" aria-label="Volume rendering controls">
       <header>
-        <div class="file-info">
+        <div class="file-info" title="Drag to move the panel">
           <strong>${filename}</strong>
           <span id="metadata">Loading NIfTI volume…</span>
         </div>
@@ -136,6 +136,7 @@ function getHtml(options: {
           <button id="layout-toggle" type="button" aria-pressed="false" title="Switch between the 3D view and four panels: axial, coronal, sagittal and 3D">Four-up</button>
           <button id="axial-camera" type="button">Axial</button>
           <button id="reset-camera" type="button">Reset 3D</button>
+          <button id="controls-collapse" type="button" aria-expanded="true" aria-controls="controls" title="Collapse or expand the controls">▾</button>
         </div>
       </header>
       <div class="control-grid">

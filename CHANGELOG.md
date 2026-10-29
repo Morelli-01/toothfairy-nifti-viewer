@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Controls panel: drag its header to move it off the scan; ▸/▾ folds it down to the header row. It stays inside the view when resized; in four-up it remains the top bar and folding frees room for the slices.
+
 ## 0.2.0
 
 - Orientation menu: header transform, raw voxel grid, or any of the 48 standard codes (RAS, LAS, LPS, LPI, …) assigned to the voxel axes. Replaces the automatic S/I flip (which turned ToothFairy3's LPS headers into LPI, a left/right mirror; their anatomy is RPI), the axis-swap menu and the LAS/RAS mirror.
